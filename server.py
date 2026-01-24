@@ -29,7 +29,7 @@ load_dotenv(ROOT_DIR / '.env')
 SECRET_KEY = "flippy_bird_super_secret_key_forever"
 ALGORITHM = "HS256"
 # Note: In production, use os.getenv("MONGO_URI") instead of hardcoding
-MONGO_URI = "mongodb+srv://joelfreelancing_db_user:WtZkkz8rkw21Wes2@flippybird.7rfhk80.mongodb.net/?appName=FlippyBird"
+MONGO_URI = os.getenv("MONGO_URI")
 
 client = None
 db = None
