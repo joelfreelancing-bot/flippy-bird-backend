@@ -1,8 +1,6 @@
 import asyncio
 import sys
 import os
-import logging
-import secrets
 import jwt
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -12,7 +10,7 @@ from datetime import datetime, timedelta
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
@@ -28,7 +26,6 @@ load_dotenv(ROOT_DIR / '.env')
 # ⚠️ KEEP A FIXED KEY so users stay logged in
 SECRET_KEY = "flippy_bird_super_secret_key_forever"
 ALGORITHM = "HS256"
-# Note: In production, use os.getenv("MONGO_URI") instead of hardcoding
 MONGO_URI = os.getenv("MONGO_URI")
 
 client = None
@@ -58,11 +55,6 @@ class UserInit(BaseModel):
     device_id: str
     username: str
 
-class User(BaseModel):
-    device_id: str
-    username: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-
 class ScoreSubmit(BaseModel):
     score: int
 
@@ -75,29 +67,52 @@ class LeaderboardEntry(BaseModel):
 
 @api_router.post("/auth/init")
 async def initialize_user(data: UserInit):
-    if db is None: return JSONResponse(status_code=500, content={"message": "DB Error"})
+    if db is None: 
+        return JSONResponse(status_code=500, content={"detail": "Database not connected"})
 
-    # 1. Check if this device already exists
-    existing_user = await db.users.find_one({"device_id": data.device_id})
-    
-    if existing_user:
-        # User exists, just return a token
-        token = create_token(data.device_id, existing_user["username"])
+    # --- 🔒 SECURITY STEP 1: Check if Name is Taken ---
+    # We search case-insensitive ("Joel" == "joel")
+    existing_name_user = await db.users.find_one(
+        {"username": {"$regex": f"^{data.username}$", "$options": "i"}}
+    )
+
+    if existing_name_user:
+        # The name exists. Now, IS IT YOU?
+        if existing_name_user["device_id"] != data.device_id:
+            # 🛑 STOP: Different device trying to use an existing name
+            return JSONResponse(
+                status_code=403, 
+                content={"detail": "Username taken! Please choose another."}
+            )
+        
+        # ✅ SUCCESS: It is you (re-install or same phone)
+        token = create_token(data.device_id, existing_name_user["username"])
         return {
             "message": "Welcome back",
             "access_token": token,
-            "username": existing_user["username"],
+            "username": existing_name_user["username"],
             "new_user": False
         }
-    
-    # 2. New Device? Check if USERNAME is unique
-    if await db.users.find_one({"username": data.username}):
-        return JSONResponse(status_code=400, content={"message": "Username taken, choose another."})
 
-    # 3. Create new user
+    # --- SECURITY STEP 2: Check if Device already has a DIFFERENT name ---
+    # (Optional: Prevent one phone from creating 100 accounts)
+    existing_device_user = await db.users.find_one({"device_id": data.device_id})
+    
+    if existing_device_user:
+        # You are 'Device 123' trying to be 'Mark', but you are already 'Joel'
+        # We just log you in as your ORIGINAL name 'Joel'
+        token = create_token(data.device_id, existing_device_user["username"])
+        return {
+            "message": "Restored previous account",
+            "access_token": token,
+            "username": existing_device_user["username"],
+            "new_user": False
+        }
+
+    # --- STEP 3: Brand New User ---
     new_user = {
         "device_id": data.device_id,
-        "username": data.username,
+        "username": data.username, # We save the exact casing they typed
         "created_at": datetime.utcnow()
     }
     await db.users.insert_one(new_user)
@@ -128,8 +143,10 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 @api_router.post("/scores/submit")
 async def submit_score(data: ScoreSubmit, device_id: str = Depends(get_current_user)):
     user = await db.users.find_one({"device_id": device_id})
-    if not user: raise HTTPException(status_code=404, detail="User not found")
+    if not user: 
+        raise HTTPException(status_code=404, detail="User not found")
     
+    # Insert score record
     await db.scores.insert_one({
         "device_id": device_id,
         "username": user["username"],
@@ -142,6 +159,7 @@ async def submit_score(data: ScoreSubmit, device_id: str = Depends(get_current_u
 async def weekly_leaderboard():
     pipeline = [
         {"$sort": {"score": -1}},
+        # Group by Device ID to only show each player's BEST score
         {"$group": {
             "_id": "$device_id",
             "username": {"$first": "$username"},
@@ -158,6 +176,5 @@ app.include_router(api_router)
 
 if __name__ == "__main__":
     import uvicorn
-    # Use the PORT environment variable provided by Render, or default to 8000
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
