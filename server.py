@@ -1,3 +1,6 @@
+@api_router.get("/ping")
+async def keep_awake():
+    return {"status": "awake", "time": datetime.utcnow()}
 import asyncio
 import sys
 import os
