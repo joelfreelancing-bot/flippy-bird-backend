@@ -49,6 +49,7 @@ api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
 # --- HEALTH CHECK / KEEP AWAKE ---
+@api_router.head("/ping")
 @api_router.get("/ping")
 async def ping():
     return {"status": "awake", "time": datetime.utcnow()}
