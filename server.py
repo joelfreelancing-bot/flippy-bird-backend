@@ -1,6 +1,3 @@
-@api_router.get("/ping")
-async def keep_awake():
-    return {"status": "awake", "time": datetime.utcnow()}
 import asyncio
 import sys
 import os
@@ -26,7 +23,6 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-# ⚠️ KEEP A FIXED KEY so users stay logged in
 SECRET_KEY = "flippy_bird_super_secret_key_forever"
 ALGORITHM = "HS256"
 MONGO_URI = os.getenv("MONGO_URI")
@@ -52,8 +48,12 @@ app = FastAPI(lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 security = HTTPBearer()
 
-# --- MODELS ---
+# --- HEALTH CHECK / KEEP AWAKE ---
+@api_router.get("/ping")
+async def ping():
+    return {"status": "awake", "time": datetime.utcnow()}
 
+# --- MODELS ---
 class UserInit(BaseModel):
     device_id: str
     username: str
@@ -66,34 +66,22 @@ class LeaderboardEntry(BaseModel):
     score: int
     rank: Optional[int] = None
 
-# --- HEALTH CHECK ---
-@api_router.get("/ping")
-async def ping():
-    return {"status": "awake", "time": datetime.utcnow()}
-
 # --- AUTH ROUTES ---
-
 @api_router.post("/auth/init")
 async def initialize_user(data: UserInit):
     if db is None: 
         return JSONResponse(status_code=500, content={"detail": "Database not connected"})
 
-    # --- 🔒 SECURITY STEP 1: Check if Name is Taken ---
-    # We search case-insensitive ("Joel" == "joel")
     existing_name_user = await db.users.find_one(
         {"username": {"$regex": f"^{data.username}$", "$options": "i"}}
     )
 
     if existing_name_user:
-        # The name exists. Now, IS IT YOU?
         if existing_name_user["device_id"] != data.device_id:
-            # 🛑 STOP: Different device trying to use an existing name
             return JSONResponse(
                 status_code=403, 
                 content={"detail": "Username taken! Please choose another."}
             )
-        
-        # ✅ SUCCESS: It is you (re-install or same phone)
         token = create_token(data.device_id, existing_name_user["username"])
         return {
             "message": "Welcome back",
@@ -102,13 +90,8 @@ async def initialize_user(data: UserInit):
             "new_user": False
         }
 
-    # --- SECURITY STEP 2: Check if Device already has a DIFFERENT name ---
-    # (Optional: Prevent one phone from creating 100 accounts)
     existing_device_user = await db.users.find_one({"device_id": data.device_id})
-    
     if existing_device_user:
-        # You are 'Device 123' trying to be 'Mark', but you are already 'Joel'
-        # We just log you in as your ORIGINAL name 'Joel'
         token = create_token(data.device_id, existing_device_user["username"])
         return {
             "message": "Restored previous account",
@@ -117,10 +100,9 @@ async def initialize_user(data: UserInit):
             "new_user": False
         }
 
-    # --- STEP 3: Brand New User ---
     new_user = {
         "device_id": data.device_id,
-        "username": data.username, # We save the exact casing they typed
+        "username": data.username,
         "created_at": datetime.utcnow()
     }
     await db.users.insert_one(new_user)
@@ -135,7 +117,7 @@ async def initialize_user(data: UserInit):
 
 # --- HELPERS ---
 def create_token(device_id: str, username: str):
-    expire = datetime.utcnow() + timedelta(days=3650) # 10 Years Expiry
+    expire = datetime.utcnow() + timedelta(days=3650) 
     payload = {"sub": device_id, "name": username, "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -143,7 +125,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     try:
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload["sub"] # Returns device_id
+        return payload["sub"] 
     except:
         raise HTTPException(status_code=401, detail="Invalid token")
 
@@ -154,7 +136,6 @@ async def submit_score(data: ScoreSubmit, device_id: str = Depends(get_current_u
     if not user: 
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Insert score record
     await db.scores.insert_one({
         "device_id": device_id,
         "username": user["username"],
@@ -167,7 +148,6 @@ async def submit_score(data: ScoreSubmit, device_id: str = Depends(get_current_u
 async def weekly_leaderboard():
     pipeline = [
         {"$sort": {"score": -1}},
-        # Group by Device ID to only show each player's BEST score
         {"$group": {
             "_id": "$device_id",
             "username": {"$first": "$username"},
