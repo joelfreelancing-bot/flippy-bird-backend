@@ -66,6 +66,11 @@ class LeaderboardEntry(BaseModel):
     score: int
     rank: Optional[int] = None
 
+# --- HEALTH CHECK ---
+@api_router.get("/ping")
+async def ping():
+    return {"status": "awake", "time": datetime.utcnow()}
+
 # --- AUTH ROUTES ---
 
 @api_router.post("/auth/init")
